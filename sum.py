@@ -16,7 +16,7 @@ def get_youtube_captions(url):
 
 # Function to generate summary from text
 def generate_summary(text):
-    summarizer = pipeline("summarization")
+    summarizer = pipeline("summarization")  # Automatically loads the model
     summary = summarizer(text, max_length=150, min_length=50, do_sample=False)
     return summary[0]['summary_text']
 
@@ -27,21 +27,25 @@ def main():
     # Input box for the user to paste YouTube URL
     youtube_url = st.text_input("Paste YouTube URL here:")
 
-    if youtube_url:
-        st.write("Processing video...")
+    # Create a button for generating the summary
+    if st.button("Generate Summary"):
+        if youtube_url:
+            st.write("Processing video...")
 
-        # Get video captions (subtitles)
-        captions = get_youtube_captions(youtube_url)
-        
-        if captions:
-            st.write("Captions fetched. Summarizing...")
+            # Get video captions (subtitles)
+            captions = get_youtube_captions(youtube_url)
+            
+            if captions:
+                st.write("Captions fetched. Summarizing...")
 
-            # Summarize captions
-            summary = generate_summary(captions)
-            st.write("Summary of the video:")
-            st.write(summary)
+                # Summarize captions
+                summary = generate_summary(captions)
+                st.write("Summary of the video:")
+                st.write(summary)
+            else:
+                st.write("No captions available for this video. Please try another video.")
         else:
-            st.write("No captions available for this video. Please try another video.")
+            st.write("Please paste a valid YouTube URL.")
 
 if __name__ == "__main__":
     main()
