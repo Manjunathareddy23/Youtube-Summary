@@ -1,6 +1,10 @@
 import streamlit as st
 from pytube import YouTube
 from transformers import pipeline
+import torch
+
+# Ensure that we are using CPU (to avoid issues with missing GPUs or event loops)
+device = -1  # Use CPU (set to 0 if you have GPU available and want to use it)
 
 # Function to extract captions from YouTube video
 def get_youtube_captions(url):
@@ -18,7 +22,7 @@ def get_youtube_captions(url):
 def generate_summary(text):
     try:
         # Explicitly loading the model once outside the function to improve performance
-        summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+        summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device=device)
     except Exception as e:
         return f"Error loading summarization model: {str(e)}"
     
