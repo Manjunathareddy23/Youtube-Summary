@@ -2,3 +2,7 @@ streamlit
 pytube 
 transformers
 torch
+python-dotenv
+assemblyai
+pandas
+streamlit_option_menu
