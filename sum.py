@@ -16,9 +16,22 @@ def get_youtube_captions(url):
 
 # Function to generate summary from text
 def generate_summary(text):
-    summarizer = pipeline("summarization")  # Automatically loads the model
-    summary = summarizer(text, max_length=150, min_length=50, do_sample=False)
-    return summary[0]['summary_text']
+    # Load the model with error handling in case of issues
+    try:
+        summarizer = pipeline("summarization", model="facebook/bart-large-cnn")  # Explicitly load the model
+    except Exception as e:
+        return f"Error loading summarization model: {str(e)}"
+
+    # Chunk the text to avoid model token limit (512 tokens for BART)
+    max_input_length = 1024  # Max input length for BART model
+    text_chunks = [text[i:i+max_input_length] for i in range(0, len(text), max_input_length)]
+
+    summary = ''
+    for chunk in text_chunks:
+        result = summarizer(chunk, max_length=150, min_length=50, do_sample=False)
+        summary += result[0]['summary_text'] + " "  # Concatenate the chunk summaries
+
+    return summary.strip()
 
 # Streamlit App
 def main():
