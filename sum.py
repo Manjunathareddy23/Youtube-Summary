@@ -28,9 +28,14 @@ def generate_summary(text):
 
     summary = ''
     for chunk in text_chunks:
-        result = summarizer(chunk, max_length=150, min_length=50, do_sample=False)
-        summary += result[0]['summary_text'] + " "  # Concatenate the chunk summaries
-
+        # Ensure chunk length is reasonable for summarization
+        if len(chunk.split()) > 8:  # Avoid processing very short chunks
+            result = summarizer(chunk, max_length=150, min_length=50, do_sample=False)
+            summary += result[0]['summary_text'] + " "  # Concatenate the chunk summaries
+        else:
+            # If the chunk is too short, consider not summarizing it
+            summary += chunk + " "
+    
     return summary.strip()
 
 # Streamlit App
