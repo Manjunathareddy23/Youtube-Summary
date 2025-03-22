@@ -16,8 +16,8 @@ def get_youtube_captions(url):
 
 # Function to generate summary from text
 def generate_summary(text):
-    # Load the model with error handling in case of issues
     try:
+        # Try loading the summarization pipeline
         summarizer = pipeline("summarization", model="facebook/bart-large-cnn")  # Explicitly load the model
     except Exception as e:
         return f"Error loading summarization model: {str(e)}"
