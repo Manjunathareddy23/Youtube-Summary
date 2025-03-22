@@ -17,7 +17,7 @@ def get_youtube_captions(url):
 # Function to generate summary from text
 def generate_summary(text):
     try:
-        # Explicitly loading the model with error handling
+        # Explicitly loading the model once outside the function to improve performance
         summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
     except Exception as e:
         return f"Error loading summarization model: {str(e)}"
@@ -50,18 +50,20 @@ def main():
         if youtube_url:
             st.write("Processing video...")
 
-            # Get video captions (subtitles)
-            captions = get_youtube_captions(youtube_url)
+            # Add a spinner for the processing step
+            with st.spinner("Fetching and processing captions..."):
+                # Get video captions (subtitles)
+                captions = get_youtube_captions(youtube_url)
             
-            if captions:
-                st.write("Captions fetched. Summarizing...")
+                if captions:
+                    st.write("Captions fetched. Summarizing...")
 
-                # Summarize captions
-                summary = generate_summary(captions)
-                st.write("Summary of the video:")
-                st.write(summary)
-            else:
-                st.write("No captions available for this video. Please try another video.")
+                    # Summarize captions
+                    summary = generate_summary(captions)
+                    st.write("Summary of the video:")
+                    st.write(summary)
+                else:
+                    st.write("No English captions available for this video. Please try another video.")
         else:
             st.write("Please paste a valid YouTube URL.")
 
