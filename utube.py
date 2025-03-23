@@ -518,10 +518,11 @@ def setup_streamlit_ui():
     # App Header
     st.markdown("""
     <div style="text-align: center; padding: 1rem;">
-        <h1 class="main-title">🎯 Gemini Flash YouTube Video Summary App</h1>
+        <h1 class="main-title">🎯 YouTube Video Summary </h1>
         <p class="subtitle">AI-Powered Video Analysis & Summarization</p>
         <div style="margin-top: 1rem;">
-            <a href="https://www.linkedin.com/in/lindsayhiebert/" class="linkedin-link">By Lindsay Hiebert</a>
+            <a href="https://www.linkedin.com/in/lindsayhiebert/" class="linkedin-link">By Manjunatha Reddy Kummathi</a>
+            <p>6300138360</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
