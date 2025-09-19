@@ -1,3 +1,4 @@
+
 # Part 1: Imports and Initial Setup
 
 import streamlit as st
@@ -217,7 +218,7 @@ def get_youtube_title(video_id, youtube_link):
         title = response.get("items", [{}])[0].get("snippet", {}).get("title")
         return title if title else fallback_title
     except Exception:
-        st.warning("⚠ Error retrieving video title. Falling back to Video ID.")
+        st.warning("⚠️ Error retrieving video title. Falling back to Video ID.")
         return fallback_title
 
     
@@ -228,7 +229,7 @@ def process_video_url(youtube_link):
     Returns video_id and transcript if successful, (None, None) if not.
     """
     if not youtube_link:
-        st.warning("⚠ Please enter a YouTube URL")
+        st.warning("⚠️ Please enter a YouTube URL")
         return None, None
 
     # Clean the URL
@@ -244,7 +245,7 @@ def process_video_url(youtube_link):
     # Get video title
     video_title = get_youtube_title(video_id, youtube_link)
     if not video_title:
-        st.warning("⚠ Could not retrieve video title. Defaulting to video ID.")
+        st.warning("⚠️ Could not retrieve video title. Defaulting to video ID.")
 
     # Get transcript
     transcript = extract_transcript(video_id)
@@ -425,7 +426,7 @@ Video Link: https://youtube.com/watch?v={video_id}
     if qa_history and len(qa_history) > 0:
         markdown_content += "\n## Questions & Answers\n\n"
         for qa in qa_history:
-            markdown_content += f"*Q: {qa['question']}*\n\n"
+            markdown_content += f"**Q: {qa['question']}**\n\n"
             markdown_content += f"A: {qa['answer']}\n\n"
     
     markdown_content += "\n---\nGenerated using YouTube Video Summarizer"
@@ -600,9 +601,9 @@ def convert_markdown_to_word(doc, text):
             continue
 
         # Handle bold text
-        if '' in line:
+        if '**' in line:
             p = doc.add_paragraph()
-            parts = line.split('')
+            parts = line.split('**')
             for i, part in enumerate(parts):
                 run = p.add_run(part)
                 if i % 2 == 1:  # Odd parts are bold
@@ -711,7 +712,7 @@ def setup_api_section():
 
 def show_quick_guide():
     """Display the Quick Guide section."""
-    with st.expander("ℹ How to Use"):
+    with st.expander("ℹ️ How to Use"):
         st.markdown("""
      
         1. 🔗 Paste any YouTube URL format:
@@ -867,7 +868,7 @@ def handle_qa_section():
 
     # Ensure that a summary (Fast or Detailed) has been generated
     if not st.session_state.current_summary:
-        st.warning("⚠ Generate a summary first to enable Q&A functionality.")
+        st.warning("⚠️ Generate a summary first to enable Q&A functionality.")
         return
 
     st.markdown('<h2 class="section-header">❓ Ask Questions About the Video</h2>', 
@@ -877,7 +878,7 @@ def handle_qa_section():
     if st.session_state.qa_history:
         st.markdown("### Previous Questions & Answers")
         for qa in st.session_state.qa_history:
-            st.markdown(f"*Q: {qa['question']}*")
+            st.markdown(f"**Q: {qa['question']}**")
             st.markdown(f"A: {qa['answer']}\n")
 
     # Input box for the user's question
@@ -929,7 +930,7 @@ def show_usage_stats():
     st.sidebar.text(f"Videos Analyzed: {st.session_state.video_count}/3")  # Changed from 10 to 3
     st.sidebar.text(f"Questions Asked: {st.session_state.query_count}/5")   # Changed from 25 to 5
     if st.session_state.video_count >= 2 or st.session_state.query_count >= 4:  # Changed thresholds
-        st.sidebar.warning("⚠ Approaching usage limit!")
+        st.sidebar.warning("⚠️ Approaching usage limit!")
         
 
 def main():
@@ -983,5 +984,5 @@ def main():
     # Show footer
     show_footer()
 
-if _name_ == "_main_":
-    main()
+if __name__ == "__main__":
+    main() 
