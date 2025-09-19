@@ -73,3 +73,11 @@ watchdog
 wheel
 XlsxWriter
 youtube-transcript-api
+streamlit
+pytube
+youtube-transcript-api
+transformers
+torch
+nltk
+readtime
+textstat
