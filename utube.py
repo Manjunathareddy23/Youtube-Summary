@@ -108,10 +108,12 @@ def get_video_title_cached(video_id):
             "youtube", "v3", developerKey=YOUTUBE_API_KEY
         )
         response = youtube.videos().list(part="snippet", id=video_id).execute()
-        title = response.get("items", [{}])[0].get("snippet", {}).get("title")
-        return title or f"Video ID: {video_id}"
+        snippet = response.get("items", [{}])[0].get("snippet", {})
+        title = snippet.get("title")
+        description = snippet.get("description", "")
+        return title or f"Video ID: {video_id}", description
     except Exception:
-        return f"Video ID: {video_id}"
+        return f"Video ID: {video_id}", ""
 
 def fetch_transcript(video_id):
     """Safely fetch transcript; return None if unavailable."""
@@ -232,15 +234,16 @@ def main():
     if video_id:
         if st.button("Process Video") or st.session_state.current_video_id != video_id:
             st.session_state.current_video_id = video_id
-            st.session_state.current_video_title = get_video_title_cached(video_id)
-            
+            title, description = get_video_title_cached(video_id)
+            st.session_state.current_video_title = title
+
             transcript_list = fetch_transcript(video_id)
             st.session_state.current_transcript = format_transcript(transcript_list)
 
             if st.session_state.current_transcript:
                 st.success(f"Transcript fetched: {st.session_state.current_video_title}")
             else:
-                st.warning("Transcript not available. Fast summary will use video title/description only.")
+                st.warning("Transcript not available. Fast summary will use video title & description.")
 
         if st.session_state.current_transcript or st.session_state.current_video_title:
             col1, col2 = st.columns(2)
@@ -250,7 +253,7 @@ def main():
                     st.success("Detailed summary generated!")
             with col2:
                 if st.button("Generate Fast Summary"):
-                    text_for_summary = st.session_state.current_transcript or st.session_state.current_video_title
+                    text_for_summary = st.session_state.current_transcript or (st.session_state.current_video_title + "\n" + description)
                     st.session_state.current_summary = generate_content(text_for_summary, FAST_SUMMARY_PROMPT)
                     st.success("Fast summary generated!")
 
