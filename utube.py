@@ -1,11 +1,10 @@
-# ---------------- 1️⃣ Imports ----------------
+# ---------------- Part 1: Imports and Setup ----------------
 import streamlit as st
 import os
 import googleapiclient.discovery
 from dotenv import load_dotenv
 import google.generativeai as genai
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
 from datetime import datetime
 from docx import Document
 from docx.shared import Pt
@@ -16,17 +15,18 @@ import time
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ---------------- 2️⃣ Constants ----------------
+# Constants
 RETRY_COUNT = 3
 RETRY_DELAY = 2
 
+# Streamlit page config
 st.set_page_config(
     page_title="Gemini Flash YouTube Video Summary App",
     page_icon="🎯",
     layout="wide"
 )
 
-# ---------------- 3️⃣ Session Defaults ----------------
+# ---------------- Session State ----------------
 session_defaults = {
     "current_summary": None,
     "word_doc_binary": None,
@@ -44,11 +44,11 @@ for key, value in session_defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# ---------------- 4️⃣ Load Environment ----------------
+# ---------------- Load API Keys ----------------
 load_dotenv(override=True)
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# ---------------- 5️⃣ Prompts ----------------
+# ---------------- Prompts ----------------
 CHUNK_PROMPT = """Analyze this portion of the video transcript and provide:
 1. Key points discussed in this section
 2. Notable quotes with timestamps
@@ -74,8 +74,9 @@ Please synthesize this complete summary: """
 
 FAST_SUMMARY_PROMPT = """Provide a concise executive summary of the video transcript (200-500 words). Skip detailed quotes or technical terms."""
 
-# ---------------- 6️⃣ Helper Functions ----------------
+# ---------------- Helper Functions ----------------
 def get_youtube_video_id(url):
+    """Extract video ID from various YouTube URL formats."""
     url = url.strip()
     if not url:
         return None
@@ -100,6 +101,7 @@ def get_youtube_video_id(url):
 
 @st.cache_data(show_spinner=False)
 def get_video_title_cached(video_id, youtube_link):
+    """Fetch video title using YouTube Data API, fallback to ID if fails."""
     fallback_title = f"Video ID: {video_id}"
     try:
         youtube = googleapiclient.discovery.build(
@@ -112,13 +114,16 @@ def get_video_title_cached(video_id, youtube_link):
         return fallback_title
 
 def get_transcript_fallback(video_id):
+    """Get transcript safely, including auto-generated captions fallback."""
     try:
         return YouTubeTranscriptApi.get_transcript(video_id)
-    except NoTranscriptFound:
+    except (NoTranscriptFound, TranscriptsDisabled):
         try:
             return YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        except (NoTranscriptFound, TranscriptsDisabled):
+        except Exception:
             return None
+    except Exception:
+        return None
 
 @st.cache_data(show_spinner=False)
 def get_transcript_cached(video_id):
@@ -133,11 +138,12 @@ def get_transcript_cached(video_id):
     return " ".join(formatted_transcript)
 
 def format_response(response_text):
+    """Clean up Gemini response formatting."""
     cleaned = re.sub(r'\n{3,}', '\n\n', response_text)
     cleaned = re.sub(r'(?m)^\s*[-•]\s*', '- ', cleaned)
     return cleaned
 
-# ---------------- 7️⃣ Gemini AI Functions ----------------
+# ---------------- Gemini Content Generation ----------------
 if "gemini_model" not in st.session_state:
     st.session_state.gemini_model = genai.GenerativeModel(
         "gemini-1.5-flash-latest",
@@ -145,6 +151,7 @@ if "gemini_model" not in st.session_state:
     )
 
 def generate_content(text, prompt):
+    """Generate content using Gemini."""
     model = st.session_state.gemini_model
     try:
         response = model.generate_content(f"{prompt}\n\n{text}")
@@ -154,6 +161,7 @@ def generate_content(text, prompt):
         return None
 
 def chunk_text_smarter(text, max_length=3000):
+    """Split transcript into smart chunks."""
     sentences = re.split(r'(?<=[.!?]) +', text)
     chunks = []
     current = ""
@@ -168,10 +176,10 @@ def chunk_text_smarter(text, max_length=3000):
     return chunks
 
 def analyze_transcript_parallel(transcript):
+    """Analyze transcript in parallel."""
     chunks = chunk_text_smarter(transcript)
     chunk_analyses = []
     progress_bar = st.progress(0)
-
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_chunk = {executor.submit(generate_content, chunk, CHUNK_PROMPT): chunk for chunk in chunks}
         for i, future in enumerate(as_completed(future_to_chunk)):
@@ -183,10 +191,11 @@ def analyze_transcript_parallel(transcript):
     return generate_content(combined_analysis, FINAL_PROMPT)
 
 def generate_qa_response(question, transcript, summary):
+    """Generate answer for user question."""
     prompt = f"Question: {question}\n\nSummary:\n{summary}\n\nTranscript:\n{transcript}\n\nAnswer:"
     return generate_content(prompt, "")
 
-# ---------------- 8️⃣ Word & Markdown ----------------
+# ---------------- Document Generation ----------------
 def create_word_document(summary, video_title, video_id, qa_history=None):
     doc = Document()
     title = doc.add_heading(f"Video Summary: {video_title or 'Untitled'}", 0)
@@ -231,7 +240,7 @@ def create_markdown_download(summary, video_title, video_id, qa_history=None):
     markdown_content += "\n---\nGenerated using YouTube Video Summarizer"
     return markdown_content
 
-# ---------------- 9️⃣ UI Functions ----------------
+# ---------------- Streamlit UI ----------------
 def setup_streamlit_ui():
     st.markdown("""
     <style>
@@ -246,8 +255,8 @@ def show_quick_guide():
     with st.expander("ℹ️ How to Use"):
         st.markdown("""
         1. Paste any YouTube URL
-        2. Click 'Process Video'
-        3. Generate Detailed Notes or Fast Summary
+        2. Click 'Generate Detailed Notes' or 'Fast Summary'
+        3. Get AI-powered summary
         4. Ask questions about the content
         5. Download in Markdown or Word format
         """)
@@ -256,7 +265,7 @@ def show_footer():
     st.markdown("---")
     st.markdown("Generated using Gemini Flash AI & Streamlit")
 
-# ---------------- 10️⃣ Main App ----------------
+# ---------------- Main App ----------------
 def main():
     setup_streamlit_ui()
     show_quick_guide()
@@ -274,22 +283,22 @@ def main():
                 st.success(f"Transcript fetched: {st.session_state.current_video_title}")
                 st.session_state.video_processed = True
             else:
-                st.warning("Transcript not available. Fast summary will use AI-generated notes.")
-                st.session_state.video_processed = True
-    
-        if st.session_state.video_processed:
+                st.warning("Transcript not available for this video. You can still generate fast summary.")
+
+        if st.session_state.video_processed or st.session_state.current_transcript:
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Generate Detailed Notes"):
-                    transcript = st.session_state.current_transcript or st.session_state.current_video_title
-                    st.session_state.current_summary = analyze_transcript_parallel(transcript)
+                if st.button("Generate Detailed Notes") and st.session_state.current_transcript:
+                    st.session_state.current_summary = analyze_transcript_parallel(st.session_state.current_transcript)
                     st.success("Detailed summary generated!")
                     st.session_state.fast_summary_generated = True
 
             with col2:
                 if st.button("Generate Fast Summary"):
-                    transcript = st.session_state.current_transcript or st.session_state.current_video_title
-                    st.session_state.current_summary = generate_content(transcript, FAST_SUMMARY_PROMPT)
+                    transcript_text = st.session_state.current_transcript or ""
+                    st.session_state.current_summary = generate_content(
+                        transcript_text, FAST_SUMMARY_PROMPT
+                    )
                     st.success("Fast summary generated!")
                     st.session_state.fast_summary_generated = True
 
@@ -300,8 +309,7 @@ def main():
             # QA Section
             question = st.text_input("Ask a question about this video:")
             if question:
-                transcript = st.session_state.current_transcript or st.session_state.current_video_title
-                answer = generate_qa_response(question, transcript, st.session_state.current_summary)
+                answer = generate_qa_response(question, st.session_state.current_transcript or "", st.session_state.current_summary)
                 st.session_state.qa_history.append({'question': question, 'answer': answer})
                 st.success("Answer generated!")
                 st.text_area("Answer", answer, height=150)
