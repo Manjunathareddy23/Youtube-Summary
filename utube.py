@@ -1,7 +1,8 @@
 # ------------------- Imports -------------------
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from pytube import YouTube, extract
+from pytube import YouTube
+import pytube
 from transformers import pipeline
 import nltk
 from nltk.tokenize import word_tokenize
@@ -20,7 +21,7 @@ summarization = pipeline("summarization")
 def get_transcript(video_url):
     """Retrieve transcript text from a YouTube video URL"""
     try:
-        video_id = extract.video_id(video_url)
+        video_id = pytube.extract.video_id(video_url)
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         corpus = " ".join([element["text"].replace("\n", " ") for element in transcript_list])
         return corpus
