@@ -1,122 +1,334 @@
+# Part 1: Imports and Initial Setup
 import streamlit as st
-import os, io, re, time
-from datetime import datetime
-from urllib.parse import urlparse, parse_qs
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+import os
+import googleapiclient.discovery
 from dotenv import load_dotenv
 import google.generativeai as genai
+from youtube_transcript_api import YouTubeTranscriptApi
+from datetime import datetime
 from docx import Document
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+import io
+import re
+import time
+from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ------------------- Session State -------------------
-if "summary" not in st.session_state: st.session_state.summary = None
-if "transcript" not in st.session_state: st.session_state.transcript = None
-if "video_id" not in st.session_state: st.session_state.video_id = None
-if "video_title" not in st.session_state: st.session_state.video_title = None
-if "word_doc" not in st.session_state: st.session_state.word_doc = None
-if "qa_history" not in st.session_state: st.session_state.qa_history = []
-if "fast_summary" not in st.session_state: st.session_state.fast_summary = None
-if "video_count" not in st.session_state: st.session_state.video_count = 0
-if "query_count" not in st.session_state: st.session_state.query_count = 0
+# Constants
+RETRY_COUNT = 3
+RETRY_DELAY = 2
 
-# ------------------- Load API -------------------
-load_dotenv()
-API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-if not API_KEY:
-    st.error("Missing Google AI API key!")
-    st.stop()
-genai.configure(api_key=API_KEY)
+# Streamlit page config
+st.set_page_config(
+    page_title="Gemini Flash YouTube Video Summary App",
+    page_icon="🎯",
+    layout="wide"
+)
 
-# ------------------- Utility Functions -------------------
-def get_video_id(url: str) -> str | None:
-    """Extract video ID from any YouTube URL format."""
-    try:
-        url = url.strip()
-        patterns = [
-            r"(?:v=|\/)([0-9A-Za-z_-]{11}).*"
-        ]
-        for p in patterns:
-            m = re.search(p, url)
-            if m: return m.group(1)
-        parsed = urlparse(url)
-        return parse_qs(parsed.query).get("v", [parsed.path.strip("/")])[0]
-    except: return None
+# ---------------- Session State ----------------
+session_defaults = {
+    "current_summary": None,
+    "word_doc_binary": None,
+    "video_processed": False,
+    "current_transcript": None,
+    "current_video_id": None,
+    "current_video_title": None,
+    "qa_history": [],
+    "clear_input": False,
+    "video_count": 0,
+    "query_count": 0,
+    "fast_summary_generated": False,
+}
+for key, value in session_defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-def fetch_transcript(video_id: str, retries=3) -> str | None:
-    """Fetch transcript with retry."""
-    for _ in range(retries):
-        try:
-            data = YouTubeTranscriptApi.get_transcript(video_id)
-            return " ".join([f"[{int(x['start'])//60}:{int(x['start'])%60:02d}] {x['text']}" for x in data])
-        except (TranscriptsDisabled, NoTranscriptFound): return None
-        except: time.sleep(2)
+# Load environment variables and configure Gemini
+load_dotenv(override=True)
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+# ---------------- Prompts ----------------
+CHUNK_PROMPT = """Analyze this portion of the video transcript and provide:
+1. Key points discussed in this section
+2. Notable quotes with timestamps
+3. Technical data or statistics
+4. Important concepts and definitions
+5. Brief summary
+
+Transcript section: """
+
+FINAL_PROMPT = """Based on the analysis of all sections, provide a comprehensive summary with:
+1. Main Topic/Title
+2. Executive Summary (200 words)
+3. Key Points (10-20)
+4. Detailed Analysis (2000 words)
+5. Notable Quotes and Key Statements
+6. Technical Data & Statistics
+7. Key Terms & Definitions
+8. Concepts & Frameworks
+9. Timeline & Structure
+10. Practical Applications
+
+Please synthesize this complete summary: """
+
+FAST_SUMMARY_PROMPT = """Provide a concise executive summary of the video transcript (200-500 words). Skip detailed quotes or technical terms."""
+
+# ---------------- 2️⃣ Helper Functions ----------------
+def get_youtube_video_id(url):
+    """Extract video ID from various YouTube URL formats."""
+    url = url.strip()
+    if not url:
+        return None
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)',
+        r'(?:https?:\/\/)?(?:www\.)?m\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    if 'v' in query_params:
+        return query_params['v'][0]
+    if parsed_url.hostname == 'youtu.be':
+        return parsed_url.path.lstrip('/')
     return None
 
-def generate_gemini_content(text: str, prompt: str) -> str:
-    """Call Gemini API."""
+@st.cache_data(show_spinner=False)
+def get_video_title_cached(video_id, youtube_link):
+    """Fetch video title using YouTube Data API, fallback to ID if fails."""
+    fallback_title = f"Video ID: {video_id}"
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash-latest",
-                                      generation_config={'temperature':0.7,'top_p':0.8,'top_k':40})
-        resp = model.generate_content(f"{prompt}\n{text}")
-        return re.sub(r'\n{3,}', '\n\n', resp.text)
-    except Exception as e:
-        st.warning(f"API Error: {e}")
-        return ""
+        youtube = googleapiclient.discovery.build(
+            "youtube", "v3", developerKey=os.getenv("YOUTUBE_API_KEY")
+        )
+        response = youtube.videos().list(part="snippet", id=video_id).execute()
+        title = response.get("items", [{}])[0].get("snippet", {}).get("title")
+        return title if title else fallback_title
+    except Exception:
+        return fallback_title
 
-def create_word(summary: str, qa_history: list, video_title: str, video_id: str) -> bytes:
-    """Generate Word file in-memory."""
+def retry_transcript_extraction(video_id, retries=RETRY_COUNT, delay=RETRY_DELAY):
+    """Retry logic for retrieving transcripts."""
+    for attempt in range(retries):
+        try:
+            return YouTubeTranscriptApi.get_transcript(video_id)
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                return None
+
+@st.cache_data(show_spinner=False)
+def get_transcript_cached(video_id):
+    """Fetch transcript with caching."""
+    transcript_list = retry_transcript_extraction(video_id)
+    if not transcript_list:
+        return None
+    formatted_transcript = []
+    for item in transcript_list:
+        timestamp = int(item["start"])
+        time_str = f"[{timestamp // 3600:02d}:{(timestamp % 3600) // 60:02d}:{timestamp % 60:02d}]"
+        formatted_transcript.append(f"{time_str} {item['text']}")
+    return " ".join(formatted_transcript)
+
+def format_response(response_text):
+    """Clean up Gemini response formatting."""
+    cleaned = re.sub(r'\n{3,}', '\n\n', response_text)
+    cleaned = re.sub(r'(?m)^\s*[-•]\s*', '- ', cleaned)
+    return cleaned
+
+# ---------------- 3️⃣ Content Generation ----------------
+if "gemini_model" not in st.session_state:
+    st.session_state.gemini_model = genai.GenerativeModel(
+        "gemini-1.5-flash-latest",
+        generation_config={'temperature':0.7, 'top_p':0.8, 'top_k':40}
+    )
+
+def generate_content(text, prompt):
+    """Generate content using cached Gemini model."""
+    model = st.session_state.gemini_model
+    try:
+        response = model.generate_content(f"{prompt}\n\n{text}")
+        return format_response(response.text)
+    except Exception as e:
+        st.error(f"Error generating content: {str(e)}")
+        return None
+
+def chunk_text_smarter(text, max_length=3000):
+    """Split transcript into smart chunks based on sentence boundaries."""
+    sentences = re.split(r'(?<=[.!?]) +', text)
+    chunks = []
+    current = ""
+    for s in sentences:
+        if len(current) + len(s) <= max_length:
+            current += " " + s
+        else:
+            chunks.append(current.strip())
+            current = s
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+def analyze_transcript_parallel(transcript):
+    """Analyze transcript chunks in parallel."""
+    chunks = chunk_text_smarter(transcript)
+    chunk_analyses = []
+    progress_bar = st.progress(0)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_chunk = {executor.submit(generate_content, chunk, CHUNK_PROMPT): chunk for chunk in chunks}
+        for i, future in enumerate(as_completed(future_to_chunk)):
+            result = future.result()
+            if result:
+                chunk_analyses.append(result)
+            progress_bar.progress((i+1)/len(chunks))
+    combined_analysis = "\n\n".join(chunk_analyses)
+    return generate_content(combined_analysis, FINAL_PROMPT)
+
+def generate_qa_response(question, transcript, summary):
+    """Generate answer for user question."""
+    prompt = f"Question: {question}\n\nSummary:\n{summary}\n\nTranscript:\n{transcript}\n\nAnswer:"
+    return generate_content(prompt, "")
+
+# ---------------- 4️⃣ Document Generation ----------------
+def create_word_document(summary, video_title, video_id, qa_history=None):
+    """Generate Word document."""
     doc = Document()
-    doc.add_heading(f"Video Summary: {video_title}", 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    doc.add_paragraph(f"Link: https://youtube.com/watch?v={video_id}\n")
-    doc.add_paragraph(summary)
+    title = doc.add_heading(f"Video Summary: {video_title or 'Untitled'}", 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph(f"Video Link: https://youtube.com/watch?v={video_id}")
+    doc.add_paragraph()
+    for line in summary.split("\n"):
+        doc.add_paragraph(line.strip())
     if qa_history:
-        doc.add_heading("Q&A", 1)
+        doc.add_heading("Questions & Answers", 1)
         for qa in qa_history:
-            p = doc.add_paragraph(f"Q: {qa['question']}", style='List Bullet')
-            p = doc.add_paragraph(f"A: {qa['answer']}", style='List Number')
+            q_para = doc.add_paragraph()
+            q_para.add_run("Q: ").bold = True
+            q_para.add_run(qa['question'])
+            a_para = doc.add_paragraph()
+            a_para.add_run("A: ").bold = True
+            a_para.add_run(qa['answer'])
+            doc.add_paragraph()
+    doc.add_paragraph()
+    footer = doc.add_paragraph("Generated using YouTube Video Summarizer")
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    return doc
+
+def get_word_binary(video_id, summary, qa_history, video_title):
+    """Return Word doc binary (cached)."""
+    key = f"word_{video_id}"
+    if key in st.session_state:
+        return st.session_state[key]
+    doc = create_word_document(summary, video_title, video_id, qa_history)
     bio = io.BytesIO()
     doc.save(bio)
-    return bio.getvalue()
+    st.session_state[key] = bio.getvalue()
+    return st.session_state[key]
 
-# ------------------- Streamlit UI -------------------
-st.title("🎯 YouTube Video Summarizer")
-yt_url = st.text_input("Enter YouTube link:")
+def create_markdown_download(summary, video_title, video_id, qa_history=None):
+    """Generate markdown content."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    markdown_content = f"# Video Summary: {video_title}\n\nGenerated on: {timestamp}\nVideo Link: https://youtube.com/watch?v={video_id}\n\n{summary}\n"
+    if qa_history:
+        markdown_content += "\n## Questions & Answers\n"
+        for qa in qa_history:
+            markdown_content += f"**Q: {qa['question']}**\n\nA: {qa['answer']}\n\n"
+    markdown_content += "\n---\nGenerated using YouTube Video Summarizer"
+    return markdown_content
 
-if yt_url:
-    vid_id = get_video_id(yt_url)
-    if vid_id != st.session_state.video_id:
-        st.session_state.video_id = vid_id
-        st.session_state.video_title = vid_id  # fallback
-        st.session_state.transcript = fetch_transcript(vid_id)
-        st.session_state.summary = None
-        st.session_state.fast_summary = None
-        st.session_state.qa_history = []
+# ---------------- 5️⃣ Streamlit UI ----------------
+def setup_streamlit_ui():
+    st.markdown("""
+    <style>
+    .main-title {font-size:3rem; font-weight:800; text-align:center; color: linear-gradient(120deg,#4285F4,#0F9D58);}
+    .subtitle {text-align:center;color:#5f6368;font-size:1.3rem;}
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">🎯 YouTube Video Summary</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">AI-Powered Video Analysis & Summarization</p>', unsafe_allow_html=True)
 
-    if st.session_state.transcript:
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("⚡ Fast Summary"):
-                st.session_state.fast_summary = generate_gemini_content(
-                    st.session_state.transcript, "Provide concise 200-500 word summary."
-                )
-                st.session_state.summary = st.session_state.fast_summary
-        with col2:
-            if st.button("🚀 Detailed Notes"):
-                st.session_state.summary = generate_gemini_content(
-                    st.session_state.transcript, "Analyze transcript and provide detailed summary."
-                )
+def show_quick_guide():
+    with st.expander("ℹ️ How to Use"):
+        st.markdown("""
+        1. Paste any YouTube URL
+        2. Click 'Generate Detailed Notes' or 'Fast Summary'
+        3. Get AI-powered summary
+        4. Ask questions about the content
+        5. Download in Markdown or Word format
+        """)
 
-        if st.session_state.summary:
-            st.success("Summary Generated ✅")
-            st.markdown(st.session_state.summary)
+def show_footer():
+    st.markdown("---")
+    st.markdown("Generated using Gemini Flash AI & Streamlit")
 
-            # Download Buttons
-            md = st.session_state.summary
-            st.download_button("📥 Markdown", data=md, file_name=f"{vid_id}.md", mime="text/markdown")
-            if not st.session_state.word_doc:
-                st.session_state.word_doc = create_word(md, st.session_state.qa_history, st.session_state.video_title, vid_id)
-            st.download_button("📄 Word", data=st.session_state.word_doc,
-                               file_name=f"{vid_id}.docx",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+# ---------------- 6️⃣ Main App ----------------
+def main():
+    setup_streamlit_ui()
+    show_quick_guide()
+    
+    youtube_link = st.text_input("Enter YouTube URL:")
+    video_id = get_youtube_video_id(youtube_link) if youtube_link else None
+    
+    if video_id:
+        if st.button("Process Video") or st.session_state.current_video_id != video_id:
+            st.session_state.video_processed = False
+            st.session_state.current_video_id = video_id
+            st.session_state.current_video_title = get_video_title_cached(video_id, youtube_link)
+            st.session_state.current_transcript = get_transcript_cached(video_id)
+            if st.session_state.current_transcript:
+                st.success(f"Transcript fetched: {st.session_state.current_video_title}")
+                st.session_state.video_processed = True
+            else:
+                st.error("Transcript not available for this video.")
+        
+        if st.session_state.video_processed:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Generate Detailed Notes"):
+                    st.session_state.current_summary = analyze_transcript_parallel(st.session_state.current_transcript)
+                    st.success("Detailed summary generated!")
+                    st.session_state.fast_summary_generated = True
+
+            with col2:
+                if st.button("Generate Fast Summary"):
+                    st.session_state.current_summary = generate_content(
+                        st.session_state.current_transcript, FAST_SUMMARY_PROMPT
+                    )
+                    st.success("Fast summary generated!")
+                    st.session_state.fast_summary_generated = True
+
+        if st.session_state.current_summary:
+            st.subheader("📄 Video Summary")
+            st.text_area("Summary", st.session_state.current_summary, height=400)
+
+            # QA Section
+            question = st.text_input("Ask a question about this video:")
+            if question:
+                answer = generate_qa_response(question, st.session_state.current_transcript, st.session_state.current_summary)
+                st.session_state.qa_history.append({'question': question, 'answer': answer})
+                st.success("Answer generated!")
+                st.text_area("Answer", answer, height=150)
+
+            # Download buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                word_binary = get_word_binary(video_id, st.session_state.current_summary, st.session_state.qa_history, st.session_state.current_video_title)
+                st.download_button("📥 Download Word", word_binary, f"{st.session_state.current_video_title}.docx")
+
+            with col2:
+                markdown_text = create_markdown_download(st.session_state.current_summary, st.session_state.current_video_title, video_id, st.session_state.qa_history)
+                st.download_button("📥 Download Markdown", markdown_text, f"{st.session_state.current_video_title}.md")
+
+    show_footer()
+
+# ---------------- Run App ----------------
+if __name__ == "__main__":
+    main()
